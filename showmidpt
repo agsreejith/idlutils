@@ -1,0 +1,392 @@
+#! /opt/tcl/bin/wish
+
+set LROOT /usr/local/lick
+set KROOT /usr/local/kroot
+set TCLDIR $LROOT/lib/tcl
+set INCDIR $LROOT/include
+set MUSICDIR $KROOT/include/music
+
+lappend auto_path $TCLDIR       ; # directory at top of Tcl package tree
+
+package require BLT
+package require traffic
+
+set debug 0
+
+set last_exp ""
+set Value(INFO_OBSNUM) -1			; # initialize to unknown.
+
+set midpt(t0) [clock seconds]			; # initialize to ok guess.
+set midpt(our_t0) $midpt(t0)
+set midpt(counts) 0				; # no counts yet
+set shutter_open 0				; # initial assumption
+
+set xaxis(step) 60				; # seconds by which
+						; # we adjust x-axis size.
+
+blt::vector create xVec yVec
+xVec set { 0 }
+yVec set { 0 }
+
+proc init {} {
+
+    if (1) {
+	# don't use logfile
+	set ::Log ""
+    } else {
+	set logfile "$::env(HOME)/showmidpt.log"
+	if {[catch {open $logfile a} ::Log]} {
+	    puts stderr "Can't open log: $::Log"
+	    set ::Log ""
+	} else {
+	    puts "Using logfile $logfile"
+	    puts $::Log ******************************
+	    puts $::Log "showmidpt -- [clock format [clock seconds]]"
+	    puts $::Log ******************************
+	    flush $::Log
+	}
+    }
+    
+    set ::lab [label .lab -anchor w -text \
+    	{Obs.     Start       Wgt'd Midpoint     End     Counts  Nmiss}]
+
+    set graph_fg yellow
+    set ::graph [blt::graph .graph -plotbackground blue \
+		    -height 100 -width 250 -topmargin 10 -title ""]
+    $::graph legend configure -hide yes
+    $::graph element create line1 -xdata xVec -ydata yVec \
+	    -dashes {1 2} -color $graph_fg -pixels 2 -symbol plus
+
+    set ::count_mkr [$::graph marker create text -fg $graph_fg -anchor nw]
+
+    $::graph axis configure x -subdivisions 1	; # no minor ticks
+    $::graph axis configure y -hide true		; # no y axis
+
+    # The xaxis_maxtrace proc will adjust the axis suitably.
+    trace variable ::xaxis(max) w xaxis_maxtrace
+
+    set ::tbox [Scrolled_Text .stext -width 55 -height 5 \
+    				-font {Helvetica -12 bold}]
+    # Disable the text from user-controlled entry -- it's only used
+    # for display.
+    $::tbox config -state disabled
+    $::tbox tag config Midpoint -foreground red -background white
+
+    ### grid configure $::graph -row 0 -column 0 -sticky ew
+    ### grid configure $::lab   -row 1 -column 0 -sticky w
+    ### grid configure .stext   -row 2 -column 0 -sticky news
+    pack $::graph -side top -fill x -expand false
+    pack $::lab -side top -fill none -expand false
+    pack .stext -side top -fill both -expand true
+}
+
+###########################################################################
+proc update_t {} {
+    global midpt
+    global shutter_open
+    global xaxis
+
+    if {$shutter_open} {
+	# Ensure that right axis follows time.
+	set t [clock seconds]
+	set our_elapsed [expr [clock seconds] - $midpt(our_t0)]
+	set xv_max [xVec index end]
+	set r [expr ($xv_max > $our_elapsed) ? $xv_max : $our_elapsed]
+	if {$r > $xaxis(max)} {
+	    #
+	    # xVec outgrew x-axis or our own clock time outgrew x-axis
+	    #
+	    set r [expr ($r + $xaxis(step) - 1) / $xaxis(step)]
+	    set xaxis(max) [expr $r * $xaxis(step)]
+
+	} elseif {$xaxis(max) - $r > $xaxis(step)} {
+	    #
+	    # looks like stuff got reset, so adjust axis smaller.
+	    #
+	    set r [expr ($r + $xaxis(step) - 1) / $xaxis(step)]
+	    set xaxis(max) [expr $r * $xaxis(step)]
+	}
+    }
+    counter ; # ensure counters are drawing properly.
+
+    after 1000 update_t
+}
+
+###########################################################################
+# Quick-and-dirty proc to update the counts text display.
+proc counter {} {
+    global midpt
+    global xaxis
+
+    $::graph marker config $::count_mkr \
+    			-coords [list 0 $midpt(counts)] -text $midpt(counts)
+
+}
+
+###########################################################################
+proc xaxis_maxtrace {args} {
+    global xaxis graph
+    $::graph axis configure x -min 0 -max $xaxis(max)
+}
+
+###########################################################################
+proc format_ut {sec usec} {
+    # append decimal pt to usec, so that "089098" isn't interpreted as octal.
+    append usec .
+    set frac [format ".%02d" [expr round($usec/10000.)]]
+    return "[clock format $sec -format %T -gmt true]$frac"
+}
+
+###########################################################################
+proc decode_count {N} {
+    global midpt
+    global shutter_open
+    global xaxis
+
+    if {[catch {
+	foreach {code
+		start_sec start_usec bcast_sec bcast_usec
+		    midpt(counts) midpt(nmiss)
+			} [traffic::body $N "I II II I I"] {break}
+	    } result]} {
+	puts stderr "Error decoding in decode_count: $result"
+	puts stderr "traffic::msg $N: [traffic::msg $N]"
+	return
+    } else {
+	dbg_puts "Count: code=$code  start=$start_sec \
+			bcast=$bcast_sec  c=$midpt(counts) n=$midpt(nmiss)"
+    }
+    set t_start [format "%d.%06d" $start_sec $start_usec]
+    set t_bcast [format "%d.%06d" $bcast_sec $bcast_usec]
+    switch $code {
+	0 {
+	    # Shutter has opened
+	    set shutter_open 1
+	    set midpt(t0) $t_start
+	    set midpt(our_t0) [clock seconds]
+	    set xaxis(max) $xaxis(step)
+	    xVec set { 0 }
+	    yVec set { 0 }
+	    counter
+	}
+	1 {
+	    # Another count bcast
+	    set shutter_open 1				; # just in case
+	    set dt [expr $t_bcast - $midpt(t0)]
+	    xVec append $dt
+	    yVec append $midpt(counts)
+	    counter
+	    if {[xVec length] == 300} {
+		# Too many points; reduce by half
+		set x_ {0}
+		foreach {junkx x} [xVec range 0 end] {
+		    lappend x_ $x
+		}
+		xVec set $x_
+
+		set y_ {0}
+		foreach {junky y} [yVec range 0 end] {
+		    lappend y_ $y
+		}
+		yVec set $y_
+	    }
+	}
+	default {
+	    # ignore
+	}
+    }
+    traffic::discard $N
+}
+
+###########################################################################
+proc decode_info {N} {
+    global midpt
+    global last_exp
+    global shutter_open
+
+    # Shutter has closed.
+    set shutter_open 0
+
+    if {[catch {
+	foreach {midpt(start,sec) midpt(start,usec)
+    		midpt(mid,sec) midpt(mid,usec)
+    		midpt(end,sec) midpt(end,usec)
+    		midpt(counts)
+    		midpt(tot_ministeps) midpt(nmissed)
+    		} [traffic::body $N "II II II I II"] {break}
+	    } result]} {
+	puts stderr "Error decoding in decode_info: $result"
+	puts stderr "traffic::msg $N: [traffic::msg $N]"
+	return
+    } else {
+	dbg_puts "info: start=$midpt(start,sec) mid=$midpt(mid,sec) \
+			end=$midpt(end,sec) c=$midpt(counts) \
+	                t=$midpt(tot_ministeps) m=$midpt(nmissed)"
+    }
+
+    if {$::Value(INFO_OBSNUM) >= 0} {
+	set last_exp [format "%6s" $::Value(INFO_OBSNUM)]
+    } else {
+	set last_exp [format "%6s" ""]
+    }
+    append last_exp "    "
+    append last_exp [format_ut $midpt(start,sec) $midpt(start,usec)]
+    append last_exp "    "
+    set a [string length $last_exp]
+    append last_exp [format_ut $midpt(mid,sec) $midpt(mid,usec)]
+    set b [string length $last_exp]
+    append last_exp "    "
+    append last_exp [format_ut $midpt(end,sec) $midpt(end,usec)]
+    append last_exp [format "%8d " $midpt(counts)]
+    append last_exp [format "   %d" $midpt(nmissed)]
+
+    $::tbox config -state normal
+    $::tbox insert 1.0 "$last_exp\n"
+    $::tbox tag add Midpoint 1.$a 1.$b
+    $::tbox config -state disabled
+    if {[string compare $::Log ""]} {
+	puts $::Log $last_exp
+	flush $::Log
+    }
+
+    traffic::discard $N
+}
+
+# Taken from Welch...
+proc Scrolled_Listbox {f args} {
+    frame $f
+    listbox $f.list \
+        -xscrollcommand [list [namespace current]::Scroll_Set $f.xscroll \
+                [list grid $f.xscroll -row 1 -column 0 -sticky we]] \
+        -yscrollcommand [list [namespace current]::Scroll_Set $f.yscroll \
+                [list grid $f.yscroll -row 0 -column 1 -sticky ns]]
+    eval {$f.list configure} $args
+    scrollbar $f.xscroll -orient horizontal -command [list $f.list xview]
+    scrollbar $f.yscroll -orient vertical -command [list $f.list yview]
+    grid $f.list $f.yscroll -sticky news
+    grid $f.xscroll -sticky news
+    grid rowconfigure $f 0 -weight 1
+    grid columnconfigure $f 0 -weight 1
+    return $f.list
+}
+
+# Derived from the above...
+proc Scrolled_Text {f args} {
+    frame $f
+    text $f.text \
+        -xscrollcommand [list [namespace current]::Scroll_Set $f.xscroll \
+                [list grid $f.xscroll -row 1 -column 0 -sticky we]] \
+        -yscrollcommand [list [namespace current]::Scroll_Set $f.yscroll \
+                [list grid $f.yscroll -row 0 -column 1 -sticky ns]]
+    eval {$f.text configure} $args
+    scrollbar $f.xscroll -orient horizontal -command [list $f.text xview]
+    scrollbar $f.yscroll -orient vertical -command [list $f.text yview]
+    grid $f.text $f.yscroll -sticky news
+    grid $f.xscroll -sticky news
+    grid rowconfigure $f 0 -weight 1
+    grid columnconfigure $f 0 -weight 1
+    return $f.text
+}
+
+# Also taken from Welch...
+proc Scroll_Set {scrollbar geoCmd offset size} {
+    if {$offset != 0.0 || $size != 1.0} {
+        eval $geoCmd
+        $scrollbar set $offset $size
+    } else {
+        set manager [lindex $geoCmd 0]
+        $manager forget $scrollbar
+    }
+}
+ 
+###########################################################################
+###########################################################################
+
+proc info_change_made {N} {
+    if {[traffic::msg $N reply-to] != $::Infoman(addr)} {
+	# Don't care about messages that aren't from our info-guy.
+	traffic::discard $N
+	return
+    }
+    if {[catch {
+		foreach { infocode
+			selection_or_value} [traffic::body $N II] {break}
+	    } result]} {
+	puts stderr "Error decoding in info_change_made: $result"
+	puts stderr "traffic::msg $N: [traffic::msg $N]"
+	return
+    }
+    traffic::discard $N
+
+    if {$infocode == $traffic::Definition(INFO_OBSNUM)} {
+	set ::Value(INFO_OBSNUM) $selection_or_value
+    }
+}
+
+###########################################################################
+
+proc get_info_addr {N} {
+    set msgnum [traffic::msg $N msg]
+    if {$msgnum == $traffic::Definition(NO_INTEREST)} {
+	puts "No infoman running; obsnum not available."
+	set ::Infoman(addr) 999999
+	set ::Infoman(version) ""
+	set ::Value(INFO_OBSNUM) -1
+    } else {
+	set ::Infoman(addr) [traffic::msg $N reply-to]
+	puts "Infoman addr $::Infoman(addr)"
+# it looks as if the version is no longer sent with the address
+#	if {[catch {
+#		    set ::Infoman(version) [traffic::body $N A*]
+#		} result]} {
+#	    puts stderr "Error decoding in get_info_addr: $result"
+#	    puts stderr "traffic::msg $N: [traffic::msg $N]"
+#	    return
+#	}
+#	set ::Value(INFO_OBSNUM) -1
+#	puts "Talking to Infoman version $::Infoman(version)"
+    }
+    traffic::discard $N
+}
+
+###########################################################################
+
+proc dbg_puts {str} {
+    if {$::debug && [string compare $::Log ""]} {
+	puts $::Log "DBG: $str"
+    }
+}
+
+###########################################################################
+###########################################################################
+
+init
+
+#traffic::scandefines $INCDIR/music/*.h
+traffic::scandefines $MUSICDIR/*.h 
+
+traffic::callback decode_count COUDE_MIDPT_COUNT
+traffic::callback decode_info COUDE_MIDPT_INFO
+traffic::callback traffic::discard			; # for all other junk
+
+# For infoman messages:
+traffic::scandefines $INCDIR/lick-local/sysinclude.h
+traffic::callback get_info_addr NO_INTEREST
+traffic::callback get_info_addr INFOMAN_ADDRESS
+traffic::callback info_change_made INFO_CHANGE_MADE
+
+# Get INFOMAN identification
+traffic::sendmsg (coude_midpt)/0 WANT_NO_INTEREST int 1
+traffic::sendmsg (coude_midpt)/-1 INFOMAN_ADDRESS
+vwait ::Infoman
+
+set xaxis(max) $xaxis(step) 			; # initial x axis
+counter						; # initially no counts 
+
+after 1000 update_t
+
+traffic::sendmsg (coude_midpt)/0 DESIRED_MSGS \
+				int INFO_CHANGE_MADE \
+				int COUDE_MIDPT_COUNT \
+				int COUDE_MIDPT_INFO \
+				int -1

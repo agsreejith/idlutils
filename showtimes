@@ -1,0 +1,104 @@
+#! /bin/sh
+
+# \
+    exec /opt/tcl844/bin/wish $0 "$@"
+
+namespace eval Wtime {
+    namespace export ut2sid
+
+    variable saved_longitude -121.63666	; # Mt Hamilton, degrees east long.
+    variable Jan0_UT_1980 315446400	; # No. secs. from 1/1/70 to 1/0/80
+    variable SecsPerDay
+    set SecsPerDay [expr 24*60*60]	; # seconds per day
+
+#
+# Unixtime -- seconds since 1970.0
+# Optional args:
+# longitude -- degrees east; if not given, the last presented value is used.
+#
+proc ut2sid {unixtime args} {
+    variable saved_longitude
+    variable Jan0_UT_1980
+    variable SecsPerDay
+
+    if {[llength $args]} {
+	set saved_longitude [lindex $args 0]
+    }
+    set longitude $saved_longitude
+
+
+    # compute integer number of days from Jan. 0, 1980 to given time 
+    set days [expr ($unixtime - $Jan0_UT_1980) / $SecsPerDay] 
+
+    # compute fraction of century from 1/0/80 to start of today
+    set t [expr $days / 36525.]
+
+    # compute Greenwich sidereal time at 0h UT for given day
+    set comsidsec [expr fmod((23718.2 + 8640184.542*$t + 0.0929*$t*$t), \
+								$SecsPerDay)]
+
+    # now compute current Greenwich sidereal time
+    set comsidsec [expr fmod(1.0027379093 * ($unixtime % $SecsPerDay) + \
+						      $comsidsec, $SecsPerDay)]
+
+    # compute current sidereal time at specified longitude
+    set comsidsec [expr fmod($comsidsec + $SecsPerDay + ($longitude * 240.), \
+								  $SecsPerDay)]
+
+    set comsidsec
+}
+} ; # end namespace
+
+proc timevars {delta} {
+    global pst_fmt st_fmt ut_fmt
+
+    set t [clock seconds]
+
+    set st [expr int([Wtime::ut2sid $t] + 0.5)]
+    set st_fmt [clock format $st -format "%T" -gmt true]
+
+    set x [clock format $t]
+    if {[regexp PDT $x]} {
+	set pst_fmt [clock format [expr $t - 3600] -format "%T"]
+    } else {
+	set pst_fmt [clock format $t -format "%T"]
+    }
+
+    set ut_fmt [clock format $t -format "%T" -gmt true]
+
+    # puts $pst_fmt
+    # puts $st_fmt
+    # puts $ut_fmt
+
+    after $delta timevars $delta
+}
+
+frame .f -bd 6 -relief ridge
+pack .f
+
+set w 8
+set f {Helvetica -12 bold}
+
+set hostname [exec hostname]
+set dotpos [string first . $hostname]
+if {$dotpos > 1} {set host [string range $hostname 0 [expr $dotpos-1]]
+ } {set host $hostname}
+
+wm title . "$host"
+
+entry .f.st -relief flat -font $f -width $w -state disabled -textvar st_fmt
+label .f.st_lab -text ST
+entry .f.pst -relief flat -font $f -width $w -state disabled -textvar pst_fmt
+label .f.pst_lab -text PST
+entry .f.ut -relief flat -font $f -width $w -state disabled -textvar ut_fmt
+label .f.ut_lab -text UT
+
+grid configure .f.pst -row 0 -column 0 -sticky ew
+grid configure .f.ut -row 1 -column 0 -sticky ew
+grid configure .f.st -row 2 -column 0 -sticky ew
+
+grid configure .f.pst_lab -row 0 -column 1 -sticky w
+grid configure .f.ut_lab -row 1 -column 1 -sticky w
+grid configure .f.st_lab -row 2 -column 1 -sticky w
+
+timevars 990
