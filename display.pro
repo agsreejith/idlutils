@@ -1,27 +1,20 @@
 Pro	Display, image, $
 		xs, ys, $
 		Title=t, XTitle=xt, YTitle=yt, $
-		SUBTITLE=st, $
-		MIN=mn, MAX=mx, $
-		BOT=bot, TOP=top, $
+		MIN=minval, MAX=maxval, $
+		HIST=hist_eq, $
 		LOG=log_scaling, $
 		LEVELS=l, $
-		BREAKS=breaks, $
-		WRAP=wrap, $
+                Xrange=xrange, Yrange=yrange,  $
 		ASPECT=aspect, $
 		INTERPOLATE=interp, $
 		MASKVALUE=maskvalue, $
 		PSFINE=psfine, $
 		NO_EXPAND=no_expand, $
 		NOERASE=noerase, $
-                HELP=help, $
-                 XTICKFORMAT=xtickformat, $
-                 YTICKFORMAT=ytickformat, $
-                 reverse=reverse, $
-                 silent = silent, $
-                 _extra=extrapars
+		HELP=help
 
-SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
+SccsId = '@(#)display.pro 3.3 7/16/93 Fen Tamanaha'
 ;+
 ; NAME:
 ;	DISPLAY
@@ -29,9 +22,11 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
 ; PURPOSE:
 ;	This procedure will display an image with the TV command that fills
 ;	the plotting window.  It handles scale, annotations, X and PostScript
-;	devices, aspect ratios, logarithmic scaling, and interpolation.  
-;	Masked values and values below <MIN> are mapped to !P.BACKGROUND.
-;	Values above <MAX> are mapped to !P.COLOR.
+;	devices, aspect ratios, logarithmic scaling, and interpolation.  The
+;	first colormap entry is reserved for the background (pixels flagged
+;	with the MASKVALUE value are mapped to this color) and the last entry
+;	is reserved for user defined colored annotations.  The annotation
+;	plotted by this procedure are in the color !P.Color.
 ;
 ; CATEGORY:
 ;	Image display.
@@ -59,10 +54,6 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
 ;	YTITLE=	Set this keyword to a string containing the y-axis annotation
 ;		to be used by PLOT.
 ;
-;	SUBTITLE=
-;		Set this keyword to a string containing the subtitle annotation
-;		to be used by PLOT.
-;
 ;	ASPECT=	Set this keyword to the aspect ratio (width/height) of the
 ;		pixels.  /ASPECT is the same as ASPECT=1 and produces square
 ;		pixels.
@@ -78,17 +69,16 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
 ;
 ;	MIN=	The minimum value of <Image> to be considered.  If MIN is not
 ;		provided, <Image> is searched for its minimum value.  All
-;		values less than MIN are set to !P.BACKGROUND in the Result.
+;		values less than or equal to MIN are set to 1 in the Result.
 ;
 ;	MAX=	The maximum value of <Image> to be considered.  If MAX is not
 ;		provided, <Image> is searched for its maximum value.  All
-;		values greater than MAX are set to !P.COLOR in the Result.
-;
-;	BOT=	The minimum value of the scaled result.  If TOP is not
-;		specified, 0B is used.
+;		values greater than or equal to MAX are set to TOP in the
+;		Result.
 ;
 ;	TOP=	The maximum value of the scaled result.  If TOP is not
-;		specified, 255B is used.
+;		specified, 255 is used. Note that the minimum value of the
+;		scaled result is always 1 (NOT 0 as in BYTSCL).
 ;
 ;	LEVELS=	Set this keyword to a vector of data value boundaries between
 ;		which all elements of <Image> have the same scaled byte
@@ -97,17 +87,16 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
 ;		between 1 and 2 to 128B, and map values between 2 and 5 to
 ;		255B.  This does not plot contours.
 ;
+;	/HIST:	Set this switch to show histogram equalized image.  This is
+;		overridden by the LEVELS and LOG keywords.
+;
 ;	/LOG:	Set this switch to cause a logarithmic mapping.  This is
 ;		overridden by the LEVELS keyword.
 ;
-;	PS_FINE=
-;		Set to the approximate number of elements along an axis to 
-;		use in interpolating on a PostScript device.  Interpolation
-;		to the full indexable range of a PostScript device would be
-;		unwise.  This is only useful with /INTERPOLATE and
-;		will increase the size of the PostScript file.  The default
-;		size is 256 if PS_FINE= is not set or <=0, 512 if 1 < PS_FINE=
-;		< 512, and take from the keyword if PS_FINE > 512.
+;	/PS_FINE:
+;		Set the switch to enable higher resolution images on a
+;		PostScript device.  This is only useful with /INTERPOLATE and
+;		will increase the size of the PostScript file.
 ;
 ;	/NOERASE:
 ;		Set the switch to prevent output device from being erased
@@ -120,10 +109,6 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
 ;
 ; SIDE EFFECTS:
 ;	TV display is altered.
-;
-; SUBORDINATE ROUTINES:
-;	IMGSCL()
-;	IMGEXP()
 ;
 ; RESTRICTIONS:
 ;	This routine may work for other devices, but it has only been tested
@@ -148,23 +133,8 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
 ;	July 13, 1993	Fen: (3.2) Fixed /No_Expand
 ;	July 16, 1993	Fen: (3.3) Really fixed /No_Expand
 ;-
-; 940425 - Added AUTOSTRETCH= to perform histgram equaliazation of the
-;		color table.  This whole automated scaling ability needs
-;		to be thought out much more carefully.  Right now, I think
-;		equalizing the byte scaled image without setting the
-;		clipping the scaling range causes as loss of dynamic
-;		range in the displayed colors.
-; 950717 - Modified to use the new IMGSCL which does the full byte range
-;		and maps to !P.BACKGROUND and !P.COLOR for out of bounds
-;		values.
-; 950720 - Added SUBTITLE= keyword.
-; 950801 - PS_FINE= value read from keyword.
-; 950816 - Empty subtitle passed to PLOT if SUBTITLE= not defined.
-; 950831 - Add pass-thru support for IMGSCL() keywords WRAP= and BREAKS=.
-; 030125 - Autostretch feature removed - it depends on comp_dist which
-;            cannot be found - DPF
 
-    On_Error, 0
+    On_Error, 2
 
 ;
 ; Validate arguments.
@@ -210,28 +180,7 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
             Return
         End
     EndCase
-
-;
-; Check parameter values and assign default values.
-;
-    If ( N_Elements(mn) GT 0 ) Then Begin
-	minval = mn(0)
-    EndIf Else Begin
-	minval = Min(image, MAX=maxval)
-    EndElse
-
-    If ( N_Elements(mx) GT 0 ) Then Begin
-	maxval = mx(0)
-    EndIf
-
-    If ( N_Elements(bot) LE 0 ) Then Begin
-	bot = 0B
-    EndIf
-
-    If ( N_Elements(top) LE 0 ) Then Begin
-	top = !D.Table_Size
-    EndIf
-
+ 
 ;
 ; The plotting device must be erased to reset the system variables so that
 ;	IMGEXP will get the default values.  The /NOERASE keyword should
@@ -239,8 +188,11 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
 ;	is called after a !P.MULTI change.  An ERASE at this point would
 ;	destroy the previous plots.
 ;
+; Modification by N.Piskunov: monitor the change of !p.multi:
+;
+    pmulti=!p.multi(1)*!p.multi(2)
     If ( Not Keyword_Set(noerase) ) Then Begin
-	Erase
+        if(!p.multi(0) eq 0) then Erase
     EndIf
 
 ;
@@ -248,17 +200,33 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
 ;	This only has an effect on PostScript output.
 ;
     If (Keyword_Set(psfine) ) Then Begin
-	If ( psfine GT 512 ) Then Begin
-	    psis = psfine(0)
-	EndIf Else If ( psfine GT 256 ) Then Begin
-	    psis = 512.0
-	EndIf
+	psis = 512.0
     EndIf
-    if ~keyword_set(silent) then Print, "Expanding image ..."
-    im = ImgExp(image, xs, ys, xscale, yscale, xrange, yrange, $
+
+;
+; Modification by N.Piskunov: add conventional Xrange and Yrange parameters
+; to display:
+;
+    ix = indgen(sz(1))
+    If (n_elements(xrange) eq 2) Then Begin
+      ix = where(xs ge xrange(0)<xrange(1) and xs le xrange(0)>xrange(1), nix)
+      If (nix eq 0) Then ix = indgen(sz(1)) Else $
+      If (xrange(0) gt xrange(1)) Then ix = ix(reverse(ix))
+    EndIf
+    
+    iy = indgen(sz(2))
+    If (n_elements(yrange) eq 2) Then Begin
+      iy = where(ys ge yrange(0)<yrange(1) and ys le yrange(0)>yrange(1), niy)
+      If (niy eq 0) Then iy = indgen(sz(2)) Else $
+      If (yrange(0) gt yrange(1)) Then iy = iy(reverse(iy))
+    EndIf
+
+    im = image(ix, *) & im = im(*, iy)
+
+    im = ImgExp(im, xs(ix), ys(iy), xscale, yscale, xrange, yrange, $
 		Aspect=aspect, Interpolate=Keyword_Set(interp), $
 		MaskValue=maskvalue, Position=dev_pos, PS_Interp_Size=psis, $
-		No_Expand=Keyword_Set(no_expand), _extra=extrapars)
+		No_Expand=Keyword_Set(no_expand))
     sz = Size(im)
     im_x_width = Float(sz(1))                   ;image width
     im_y_width = Float(sz(2))                   ;image height
@@ -273,25 +241,15 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
     EndIf
 
 ;
-; Convert a non-byte type image to byte with IMGSCL.  Masked values and
-;	values below <minval> are mapped to !P.BACKGROUND.  Values above
-;	<maxval> are mapped to !P.COLOR.
+; Convert a non-byte type image to byte with IMGSCL.  The bottom entry
+;	of the color table is reserved for the background/NODATA color
+;	by IMGSCL.  The top color table entry will also be reserved
+;	here for annotation color.
 ;
     If ( sz(sz(0)+1) GT 1 ) Then Begin
-    if ~keyword_set(silent) then Print, "Scaling image ..."
-; DPF 6 May 2000
-        IF keyword_set(reverse) THEN BEGIN 
-           byte_im = ImgScl(-im, Min=-maxval, Max=-minval, Top=top-bot, $
-; DPF 10 Jan 2000
-;			Breaks=breaks, Wrap=wrap, $
-;			Wrap=wrap, $
-                        Log=log_scaling, Levels=l, MaskValue=maskvalue) + $
-                          Byte(bot)
-        ENDIF ELSE BEGIN 
-           byte_im = ImgScl(im, Min=minval, Max=maxval, Top=top-bot, $
-                            Log=log_scaling, Levels=l, MaskValue=maskvalue) + $
-             Byte(bot)
-        ENDELSE  
+	byte_im = ImgScl(im, Min=minval, Max=maxval, Top=!D.Table_Size-2, $
+			Log=log_scaling, Hist=hist_eq, Levels=l, $
+                        MaskValue=maskvalue)
     EndIf Else Begin
 ;	Message, '<Image> is already byte type. No scaling done.', /Info
 	byte_im = im
@@ -311,37 +269,30 @@ SccsId = '@(#)display.pro 3.9 95/08/31 14:42:48 '
     EndIf Else Begin
         title = ' '
     EndElse
-
+ 
     If ( Keyword_Set(xt) ) Then Begin
         xtitle = String(xt)
     EndIf Else Begin
         xtitle = ' '
     EndElse
-
+ 
     If ( Keyword_Set(yt) ) Then Begin
         ytitle = String(yt)
     EndIf Else Begin
         ytitle = ' '
     EndElse
-
-    If ( Keyword_Set(st) ) Then Begin
-        subt = String(st)
-    EndIf Else Begin
-        subt = ' '
-    EndElse
-
-    IF n_elements(xtickformat) EQ 0 THEN xtickformat = ''
-    IF n_elements(ytickformat) EQ 0 THEN ytickformat = ''
-
+ 
 ;
 ; Overplot annotations.
 ;
-    Plot, [0,1], /NoErase, /NoData, XStyle=1, YStyle=1, $
-                /Device, Position=dev_pos, $
-                XRange=xrange, YRange=yrange, $
-                Title=title, XTitle=xtitle, YTitle=ytitle, $
-		SubTitle=subt, xtickformat=xtickformat, $
-                ytickformat=ytickformat, _extra=extrapars
+; Modification by N.Piskunov: update !p.multi if needed:
+;
+    Plot, [0,1], /NoErase, /NoData, XStyle=1, YStyle=1 $
+               , /Device, Position=dev_pos $
+               , XRange=xrange, YRange=yrange $
+               , Title=title, XTitle=xtitle, YTitle=ytitle
+    !p.multi(0)=!p.multi(0)-1
+    if(!p.multi(0) lt 0) then !p.multi(0)=pmulti-1
 
     Return
 End
