@@ -32,5 +32,16 @@
 ;-
 function mygauss, X, P
 
-return, p[0] + GAUSS1(X, P[1:3])
+gaussian = p[0]*exp(-1. * ((X - p[1])/p[2])^2.)
+
+;add offset:
+if n_elements(p) gt 3 then gaussian += p[3]
+
+;add linear term:
+if n_elements(p) gt 4 then  gaussian += p[4]*X
+
+;add quadratic term:
+if n_elements(p) gt 5 then  gaussian += p[5]*X^2
+
+return, gaussian
 end;mygauss.pro
