@@ -38,7 +38,7 @@ function mypoly, X, P
     ;stop
     ;P[0] = Constant/ offset
     ;P[1] = linear term
-    ;P[2] = qudratic term
+    ;P[2] = quadratic term
     ;.
     ;.
     ;.
