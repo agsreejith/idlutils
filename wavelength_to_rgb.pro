@@ -34,7 +34,8 @@
 ;-
 function wavelength_to_rgb, $
 wavelength, $
-gamma_in = gamma_in
+gamma_in = gamma_in, $
+ir_min_dimming = ir_min_dimming
 
 if ~keyword_set(gamma_in) then gamma_in = 0.8
 
@@ -86,6 +87,9 @@ endif
 
 if ((wavelength ge 780.) and (wavelength lt 900.)) then begin
 	intensity = 0.3 * (900 - wavelength)/(900. - 780.)
+	if keyword_set(ir_min_dimming) then begin
+		if (intensity lt ir_min_dimming) then intensity = ir_min_dimming
+	endif
 endif
 
 
